@@ -243,6 +243,9 @@ nbdist/
 ### Gradle ###
 .gradle
 
+### Worktrees ###
+.worktrees/
+
 ### Geyser ###
 run/
 extensions/
