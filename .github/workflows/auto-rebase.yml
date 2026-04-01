@@ -20,8 +20,8 @@ jobs:
         run: |
           status=$(curl -sf -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/GeyserMC/Geyser/commits/master/status" \
-            | jq -r '.state // "unknown"')
+            "https://api.github.com/repos/GeyserMC/Geyser/commits/master/check-runs?check_name=build" \
+            | jq -r '.check_runs[0].conclusion // "unknown"')
           echo "Upstream CI status: $status"
           echo "STATUS=$status" >> "$GITHUB_OUTPUT"
           if [ "$status" != "success" ]; then
