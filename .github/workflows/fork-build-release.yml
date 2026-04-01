@@ -26,6 +26,10 @@ jobs:
           ref: feature/splitscreen-guest-support
           submodules: true
 
+      - name: Get Feature Branch SHA
+        id: feature-sha
+        run: echo "SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Set Up Java 21
         uses: actions/setup-java@v4
         with:
@@ -58,7 +62,7 @@ jobs:
           body: |
             Automated build of split screen guest support.
             Based on upstream GeyserMC/Geyser master + split screen commit.
-            Built from: ${{ github.sha }}
+            Built from: ${{ steps.feature-sha.outputs.SHA }}
           fail_on_unmatched_files: true
           make_latest: true
           files: |
