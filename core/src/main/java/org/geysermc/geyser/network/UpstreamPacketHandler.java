@@ -26,6 +26,7 @@
 package org.geysermc.geyser.network;
 
 import io.netty.buffer.Unpooled;
+import net.kyori.adventure.text.Component;
 import org.cloudburstmc.math.vector.Vector2f;
 import org.cloudburstmc.protocol.bedrock.BedrockDisconnectReasons;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodec;
@@ -36,6 +37,7 @@ import org.cloudburstmc.protocol.bedrock.netty.codec.compression.CompressionStra
 import org.cloudburstmc.protocol.bedrock.netty.codec.compression.SimpleCompressionStrategy;
 import org.cloudburstmc.protocol.bedrock.netty.codec.compression.ZlibCompression;
 import org.cloudburstmc.protocol.bedrock.packet.BedrockPacket;
+import org.cloudburstmc.protocol.bedrock.packet.DisconnectPacket;
 import org.cloudburstmc.protocol.bedrock.packet.LoginPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ModalFormResponsePacket;
 import org.cloudburstmc.protocol.bedrock.packet.NetworkSettingsPacket;
@@ -49,6 +51,7 @@ import org.cloudburstmc.protocol.bedrock.packet.ResourcePackDataInfoPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ResourcePackStackPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ResourcePacksInfoPacket;
 import org.cloudburstmc.protocol.bedrock.packet.SetTitlePacket;
+import org.cloudburstmc.protocol.bedrock.packet.SubClientLoginPacket;
 import org.cloudburstmc.protocol.common.PacketSignal;
 import org.cloudburstmc.protocol.common.util.Zlib;
 import org.geysermc.geyser.Constants;
@@ -67,6 +70,7 @@ import org.geysermc.geyser.registry.BlockRegistries;
 import org.geysermc.geyser.registry.Registries;
 import org.geysermc.geyser.registry.loader.ResourcePackLoader;
 import org.geysermc.geyser.session.GeyserSession;
+import org.geysermc.geyser.session.auth.AuthData;
 import org.geysermc.geyser.session.PendingMicrosoftAuthentication;
 import org.geysermc.geyser.text.GeyserLocale;
 import org.geysermc.geyser.util.LoginEncryptionUtils;
@@ -76,6 +80,7 @@ import org.geysermc.geyser.util.VersionCheckUtils;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Deque;
@@ -243,6 +248,84 @@ public class UpstreamPacketHandler extends LoggingPacketHandler {
         session.sendUpstreamPacket(resourcePacksInfo);
 
         GeyserLocale.loadGeyserLocale(session.locale());
+        return PacketSignal.HANDLED;
+    }
+
+    @Override
+    public PacketSignal handle(DisconnectPacket packet) {
+        if (session.getParentSession() == null) {
+            return PacketSignal.UNHANDLED;
+        }
+        // Split screen guest disconnect: tear down the GeyserSession fully (downstream,
+        // tick thread, events, closed flag) but do NOT disconnect the Bedrock upstream —
+        // calling upstream.disconnect() closes the BedrockServerSession, which prevents
+        // the subclient from rejoining on the same RakNet connection.
+        geyser.getLogger().info("Split screen guest disconnecting: " + session.bedrockUsername());
+        session.disconnectGuest("Split screen guest disconnected");
+        // Remove subclient from the peer's session map so computeIfAbsent creates
+        // a fresh BedrockServerSession + GeyserSession on rejoin.
+        GeyserBedrockPeer peer = (GeyserBedrockPeer) session.getUpstream().getSession().getPeer();
+        peer.removeSubClientSession(session.getUpstream().getSession());
+        return PacketSignal.HANDLED;
+    }
+
+    @Override
+    public PacketSignal handle(SubClientLoginPacket packet) {
+        if (geyser.isShuttingDown() || geyser.isReloading()) {
+            session.disconnect(GeyserLocale.getLocaleStringLog("geyser.core.shutdown.kick.message"));
+            return PacketSignal.HANDLED;
+        }
+
+        GeyserSession parent = session.getParentSession();
+        if (parent == null) {
+            session.disconnect("Split screen requires a connected primary player.");
+            return PacketSignal.HANDLED;
+        }
+
+        if (!parent.isLoggedIn()) {
+            session.disconnect("Please wait for the primary player to finish connecting.");
+            return PacketSignal.HANDLED;
+        }
+
+        int guestIndex = session.getGuestIndex();
+        // UUID is derived from the full untruncated name to guarantee uniqueness
+        String fullGuestName = parent.bedrockUsername() + "_Guest" + guestIndex;
+        UUID guestUuid = UUID.nameUUIDFromBytes(("GuestPlayer:" + fullGuestName).getBytes(StandardCharsets.UTF_8));
+
+        // Truncate display name to fit Java's 16 char limit, accounting for Floodgate prefix.
+        // In standalone mode usernamePrefix() is null; assume 1 char if auth-type is Floodgate.
+        String floodgatePrefix = geyser.usernamePrefix();
+        int prefixLength = floodgatePrefix != null ? floodgatePrefix.length()
+                : (geyser.config().java().authType() == AuthType.FLOODGATE ? 1 : 0);
+        int maxLen = 16 - prefixLength;
+        String suffix = "_G" + guestIndex;
+        String guestName = parent.bedrockUsername() + suffix;
+        if (guestName.length() > maxLen) {
+            int prefixLen = Math.max(1, maxLen - suffix.length());
+            guestName = parent.bedrockUsername().substring(0, Math.min(prefixLen, parent.bedrockUsername().length())) + suffix;
+        }
+
+        // Derive a synthetic XUID for the guest — Floodgate requires a non-empty XUID
+        String guestXuid = String.valueOf(guestUuid.getLeastSignificantBits() & Long.MAX_VALUE);
+        session.setAuthData(new AuthData(guestName, guestUuid, guestXuid, -1, ""));
+
+        // Guest shares the parent's client data and mappings (same console/device/version)
+        session.setClientData(parent.getClientData());
+        session.setBlockMappings(parent.getBlockMappings());
+        session.setItemMappings(parent.getItemMappings());
+
+        geyser.getSessionManager().addPendingSession(session);
+
+        geyser.eventBus().fire(new SessionInitializeEvent(session));
+
+        PlayStatusPacket playStatus = new PlayStatusPacket();
+        playStatus.setStatus(PlayStatusPacket.Status.LOGIN_SUCCESS);
+        session.sendUpstreamPacket(playStatus);
+
+        geyser.getLogger().info("Split screen guest connecting: " + guestName + " (guest of " + parent.bedrockUsername() + ")");
+
+        session.authenticate(guestName);
+
         return PacketSignal.HANDLED;
     }
 

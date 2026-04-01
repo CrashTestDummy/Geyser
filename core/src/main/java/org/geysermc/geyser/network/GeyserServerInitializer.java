@@ -33,6 +33,7 @@ import org.checkerframework.checker.nullness.qual.NonNull;
 import org.cloudburstmc.netty.channel.raknet.config.RakChannelOption;
 import org.cloudburstmc.protocol.bedrock.BedrockPeer;
 import org.cloudburstmc.protocol.bedrock.BedrockServerSession;
+import org.cloudburstmc.protocol.bedrock.BedrockSession;
 import org.cloudburstmc.protocol.bedrock.netty.initializer.BedrockServerInitializer;
 import org.geysermc.geyser.GeyserImpl;
 import org.geysermc.geyser.session.GeyserSession;
@@ -69,6 +70,21 @@ public class GeyserServerInitializer extends BedrockServerInitializer {
                 // to the packet handler also get here if no other handler exists
                 // FIXME not ideal for e.g. UpstreamPacketHandler having a couple of its own packet handlers
                 channel.pipeline().addAfter(BedrockPeer.NAME, InvalidPacketHandler.NAME, new InvalidPacketHandler(session));
+            } else {
+                // Wire up parent session for split screen guest identity derivation
+                GeyserBedrockPeer peer = (GeyserBedrockPeer) bedrockServerSession.getPeer();
+                BedrockSession mainBedrockSession = peer.getSession(0);
+                if (mainBedrockSession instanceof BedrockServerSession mainServerSession
+                        && mainServerSession.getPacketHandler() instanceof LoggingPacketHandler mainHandler) {
+                    session.setParentSession(mainHandler.getGeyserSession());
+                }
+                // Get subclient ID set by GeyserBedrockPeer.onSessionCreated before initSession was called
+                int subClientId = peer.getPendingSubClientId();
+                if (subClientId <= 0) {
+                    this.geyser.getLogger().warning("Could not determine subclient ID for split screen session, defaulting to 1");
+                    subClientId = 1;
+                }
+                session.setGuestIndex(subClientId);
             }
 
             bedrockServerSession.setPacketHandler(new UpstreamPacketHandler(this.geyser, session));

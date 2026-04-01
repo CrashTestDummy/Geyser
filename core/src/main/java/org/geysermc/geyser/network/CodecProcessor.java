@@ -322,7 +322,6 @@ public class CodecProcessor {
             .updateSerializer(CraftingEventPacket.class, ILLEGAL_SERIALIZER)
             // Illegal unusued serverbound packets that relate to unused features
             .updateSerializer(ClientCacheBlobStatusPacket.class, ILLEGAL_SERIALIZER)
-            .updateSerializer(SubClientLoginPacket.class, ILLEGAL_SERIALIZER)
             .updateSerializer(SubChunkRequestPacket.class, ILLEGAL_SERIALIZER)
             .updateSerializer(GameTestRequestPacket.class, ILLEGAL_SERIALIZER)
             // Illegal bidirectional packets
@@ -331,6 +330,9 @@ public class CodecProcessor {
             .updateSerializer(ScriptMessagePacket.class, ILLEGAL_SERIALIZER)
 
             // Ignored serverbound packets
+            // IGNORED_SERIALIZER discards chain data — supports guest subclients (empty chains)
+            // but prevents handling authenticated subclients (real chains) in the future.
+            .updateSerializer(SubClientLoginPacket.class, IGNORED_SERIALIZER)
             .updateSerializer(ClientToServerHandshakePacket.class, IGNORED_SERIALIZER)
             .updateSerializer(EntityFallPacket.class, IGNORED_SERIALIZER)
             .updateSerializer(MapCreateLockedCopyPacket.class, IGNORED_SERIALIZER)

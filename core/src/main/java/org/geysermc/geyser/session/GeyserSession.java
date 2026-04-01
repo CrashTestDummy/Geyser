@@ -278,6 +278,20 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
     @Setter
     private AuthData authData;
     private BedrockClientData clientData;
+
+    /**
+     * For split screen guest sessions: the primary player's GeyserSession on the same console.
+     * Null for normal (non-guest) sessions.
+     */
+    @Setter
+    private @Nullable GeyserSession parentSession;
+
+    /**
+     * For split screen guest sessions: the subclient ID (1, 2, or 3).
+     * 0 for normal sessions.
+     */
+    @Setter
+    private int guestIndex = 0;
     /**
      * Used for Floodgate skin uploading
      */
@@ -1284,6 +1298,34 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
     }
 
     /**
+     * Disconnects a split screen guest session. Mirrors {@link #disconnect(Component)} but
+     * intentionally skips upstream.disconnect() — closing the BedrockServerSession would
+     * prevent the subclient from rejoining on the same RakNet connection.
+     */
+    public void disconnectGuest(String reason) {
+        if (!closed) {
+            loggedIn = false;
+
+            if (authData != null && clientData != null) {
+                geyser.getEventBus().fire(new SessionDisconnectEventImpl(this, Component.text(reason)));
+            }
+
+            if (downstream != null && !downstream.isClosed()) {
+                downstream.disconnect(Component.text(reason));
+            }
+
+            geyser.getSessionManager().removeSession(this);
+        }
+
+        if (tickThread != null) {
+            tickThread.cancel(false);
+        }
+
+        closed = true;
+        erosionHandler.close();
+    }
+
+    /**
      * Forcibly closes the upstream session
      */
     public void forciblyCloseUpstream() {
@@ -1348,6 +1390,12 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
      * Called every Minecraft tick.
      */
     protected void tick() {
+        // If the primary player disconnected, tear down any guest sessions on the same connection
+        if (parentSession != null && parentSession.isClosed()) {
+            disconnect("Parent session closed");
+            return;
+        }
+
         try {
             pistonCache.tick();
 

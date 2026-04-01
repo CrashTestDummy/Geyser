@@ -45,6 +45,10 @@ public class LoggingPacketHandler implements BedrockPacketHandler {
         this.session = session;
     }
 
+    GeyserSession getGeyserSession() {
+        return this.session;
+    }
+
     PacketSignal defaultHandler(BedrockPacket packet) {
         geyser.getLogger().debug("Handled packet: " + packet.getClass().getSimpleName());
         return PacketSignal.HANDLED;
