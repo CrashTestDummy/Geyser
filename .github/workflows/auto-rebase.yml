@@ -1,0 +1,123 @@
+name: Auto Rebase from Upstream
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday at 9:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Upstream CI Status
+        id: upstream-ci
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          status=$(curl -sf -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/GeyserMC/Geyser/commits/master/status" \
+            | jq -r '.state // "unknown"')
+          echo "Upstream CI status: $status"
+          echo "STATUS=$status" >> "$GITHUB_OUTPUT"
+          if [ "$status" != "success" ]; then
+            echo "Upstream build is not passing ($status). Skipping rebase."
+          fi
+
+      - name: Checkout Feature Branch
+        if: steps.upstream-ci.outputs.STATUS == 'success'
+        uses: actions/checkout@v4
+        with:
+          ref: feature/splitscreen-guest-support
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        if: steps.upstream-ci.outputs.STATUS == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch Upstream
+        if: steps.upstream-ci.outputs.STATUS == 'success'
+        run: |
+          git remote add upstream https://github.com/GeyserMC/Geyser.git
+          git fetch upstream master
+
+      - name: Check for New Upstream Commits
+        if: steps.upstream-ci.outputs.STATUS == 'success'
+        id: check-new
+        run: |
+          LOCAL_BASE=$(git merge-base HEAD upstream/master)
+          UPSTREAM_HEAD=$(git rev-parse upstream/master)
+          echo "Merge base: $LOCAL_BASE"
+          echo "Upstream HEAD: $UPSTREAM_HEAD"
+          if [ "$LOCAL_BASE" = "$UPSTREAM_HEAD" ]; then
+            echo "No new upstream commits. Skipping."
+            echo "HAS_CHANGES=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New upstream commits detected."
+            echo "HAS_CHANGES=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase onto Upstream Master
+        if: steps.upstream-ci.outputs.STATUS == 'success' && steps.check-new.outputs.HAS_CHANGES == 'true'
+        id: rebase
+        run: |
+          set +e
+          rebase_output=$(git rebase upstream/master 2>&1)
+          rebase_exit=$?
+          set -e
+          if [ $rebase_exit -eq 0 ]; then
+            echo "REBASE_SUCCESS=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$rebase_output" | tail -20 > /tmp/rebase-output.txt
+            git rebase --abort 2>/dev/null || true
+            echo "REBASE_SUCCESS=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push Rebased Branch
+        if: steps.rebase.outputs.REBASE_SUCCESS == 'true'
+        run: |
+          git push --force-with-lease origin feature/splitscreen-guest-support
+
+      - name: Open Issue on Conflict
+        if: steps.rebase.outputs.REBASE_SUCCESS == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let details = 'Could not capture conflict details.';
+            try {
+              details = fs.readFileSync('/tmp/rebase-output.txt', 'utf8');
+            } catch (e) {}
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'auto-rebase'
+            });
+
+            const body = `The weekly auto-rebase of \`feature/splitscreen-guest-support\` onto upstream \`master\` failed due to merge conflicts.\n\n\`\`\`\n${details}\n\`\`\`\n\nPlease resolve manually.`;
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: `Rebase still failing as of ${new Date().toISOString()}:\n\n\`\`\`\n${details}\n\`\`\``
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'Auto-rebase failed: merge conflicts',
+                body: body,
+                labels: ['auto-rebase']
+              });
+            }
