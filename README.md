@@ -6,7 +6,7 @@ Fork of [GeyserMC/Geyser](https://github.com/GeyserMC/Geyser) adding split scree
 
 All split screen work lives on [`feature/splitscreen-guest-support`](../../tree/feature/splitscreen-guest-support).
 
-Split screen guests connect to the Java server as offline-mode players with names and UUIDs derived from the primary player's session (e.g., `Player_Guest1`).
+Split screen guests connect to the Java server as offline-mode players with names and UUIDs derived from the primary player's session (e.g., `Player_G1`).
 
 ## Downloads
 
