@@ -48,6 +48,7 @@ import org.geysermc.geyser.GeyserLogger;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.util.JsonUtils;
 import org.geysermc.geyser.util.PluginMessageUtils;
+import org.geysermc.mcprotocollib.auth.GameProfile;
 import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.framing.CloseFrame;
 import org.java_websocket.handshake.ServerHandshake;
@@ -134,12 +135,6 @@ public final class FloodgateSkinUploader {
                             subscribersCount = node.get("subscribers_count").getAsInt();
                             break;
                         case SKIN_UPLOADED:
-                            // if Geyser is the only subscriber we have send it to the server manually
-                            // otherwise it's handled by the Floodgate plugin subscribers
-                            if (subscribersCount != 1) {
-                                break;
-                            }
-
                             String xuid = node.get("xuid").getAsString();
                             GeyserSession session = geyser.connectionByXuid(xuid);
 
@@ -154,12 +149,25 @@ public final class FloodgateSkinUploader {
                                 String value = data.get("value").getAsString();
                                 String signature = data.get("signature").getAsString();
 
-                                byte[] bytes = (value + '\0' + signature)
-                                        .getBytes(StandardCharsets.UTF_8);
-                                // Wait until the session is actually spawned before sending, otherwise
-                                // the plugin message can land during the proxy's null-connection window
-                                // on initial join and be silently dropped by Velocity.
-                                sendSkinWhenSpawned(geyser, session, bytes, 0);
+                                // Always update the local player's skin with the converted textures.
+                                // Schedule with a delay to ensure this runs AFTER the ADD_PLAYER
+                                // handler, which would otherwise overwrite the real skin with the
+                                // Floodgate placeholder fallback (Steve).
+                                GameProfile skinProfile = new GameProfile(session.getPlayerEntity().uuid(), session.getPlayerEntity().getUsername());
+                                skinProfile.setProperties(List.of(new GameProfile.Property("textures", value, signature)));
+                                session.scheduleInEventLoop(() ->
+                                    session.getPlayerEntity().setSkin(skinProfile, null)
+                                , 3, TimeUnit.SECONDS);
+
+                                // If Geyser is the only subscriber, also send via plugin message
+                                if (subscribersCount == 1) {
+                                    byte[] bytes = (value + '\0' + signature)
+                                            .getBytes(StandardCharsets.UTF_8);
+                                    // Wait until the session is actually spawned before sending, otherwise
+                                    // the plugin message can land during the proxy's null-connection window
+                                    // on initial join and be silently dropped by Velocity.
+                                    sendSkinWhenSpawned(geyser, session, bytes, 0);
+                                }
                             }
                             break;
                         case LOG_MESSAGE:
