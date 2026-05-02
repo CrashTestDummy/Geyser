@@ -34,7 +34,7 @@ jobs:
         with:
           ref: feature/splitscreen-guest-support
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_WORKFLOW }}
 
       - name: Configure Git
         if: steps.upstream-ci.outputs.STATUS == 'success'
