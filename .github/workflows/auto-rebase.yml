@@ -80,21 +80,60 @@ jobs:
             echo "REBASE_SUCCESS=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Push Rebased Branch
+      - name: Set Up Java 25
         if: steps.rebase.outputs.REBASE_SUCCESS == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Setup Gradle
+        if: steps.rebase.outputs.REBASE_SUCCESS == 'true'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compile Rebased Branch
+        if: steps.rebase.outputs.REBASE_SUCCESS == 'true'
+        id: compile
+        run: |
+          git submodule update --init
+          set +e
+          ./gradlew compileJava --console=plain > /tmp/compile-output.txt 2>&1
+          compile_exit=$?
+          set -e
+          if [ $compile_exit -eq 0 ]; then
+            echo "COMPILE_SUCCESS=true" >> "$GITHUB_OUTPUT"
+          else
+            # Keep just the compiler errors; fall back to the end of the log if there are none
+            errors=$(grep -A3 "error:" /tmp/compile-output.txt | head -60)
+            if [ -n "$errors" ]; then
+              echo "$errors" > /tmp/rebase-output.txt
+            else
+              tail -40 /tmp/compile-output.txt > /tmp/rebase-output.txt
+            fi
+            echo "COMPILE_SUCCESS=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push Rebased Branch
+        if: steps.compile.outputs.COMPILE_SUCCESS == 'true'
         run: |
           git push --force-with-lease origin feature/splitscreen-guest-support
 
-      - name: Open Issue on Conflict
-        if: steps.rebase.outputs.REBASE_SUCCESS == 'false'
+      - name: Open Issue on Failure
+        if: steps.rebase.outputs.REBASE_SUCCESS == 'false' || steps.compile.outputs.COMPILE_SUCCESS == 'false'
         uses: actions/github-script@v7
+        env:
+          FAILURE_KIND: ${{ steps.rebase.outputs.REBASE_SUCCESS == 'false' && 'conflict' || 'compile' }}
         with:
           script: |
             const fs = require('fs');
-            let details = 'Could not capture conflict details.';
+            let details = 'Could not capture failure details.';
             try {
               details = fs.readFileSync('/tmp/rebase-output.txt', 'utf8');
             } catch (e) {}
+
+            const reason = process.env.FAILURE_KIND === 'conflict'
+              ? 'merge conflicts'
+              : 'compile errors (the rebase applied cleanly, but the result does not build; the branch was not pushed)';
 
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
@@ -103,20 +142,22 @@ jobs:
               labels: 'auto-rebase'
             });
 
-            const body = `The weekly auto-rebase of \`feature/splitscreen-guest-support\` onto upstream \`master\` failed due to merge conflicts.\n\n\`\`\`\n${details}\n\`\`\`\n\nPlease resolve manually.`;
+            const body = `The weekly auto-rebase of \`feature/splitscreen-guest-support\` onto upstream \`master\` failed due to ${reason}.\n\n\`\`\`\n${details}\n\`\`\`\n\nPlease resolve manually.`;
 
             if (existing.data.length > 0) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: existing.data[0].number,
-                body: `Rebase still failing as of ${new Date().toISOString()}:\n\n\`\`\`\n${details}\n\`\`\``
+                body: `Rebase still failing (${reason}) as of ${new Date().toISOString()}:\n\n\`\`\`\n${details}\n\`\`\``
               });
             } else {
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: 'Auto-rebase failed: merge conflicts',
+                title: process.env.FAILURE_KIND === 'conflict'
+                  ? 'Auto-rebase failed: merge conflicts'
+                  : 'Auto-rebase failed: compile errors',
                 body: body,
                 labels: ['auto-rebase']
               });
